@@ -446,5 +446,9 @@ int main(int argc, const char **argv) {
     args[0] = argv0.data();
     return jupyterMode(args);
   }
+  if (mode == "hubbart") {
+    codon::compilationError("Ready to Hubbart!");
+    return 1;
+  }
   return otherMode({argv, argv + argc});
 }

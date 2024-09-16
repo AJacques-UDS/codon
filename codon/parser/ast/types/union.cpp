@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <memory>
 #include <string>
@@ -150,9 +150,7 @@ void UnionType::seal() {
         pendingTypes[i]->getLink()->kind == LinkType::Unbound)
       break;
   std::vector<TypePtr> typeSet(pendingTypes.begin(), pendingTypes.begin() + i);
-  auto name = tv.generateTuple(typeSet.size());
-  auto t = cache->typeCtx->instantiateGeneric(
-      cache->typeCtx->forceFind(name)->type->getClass(), typeSet);
+  auto t = cache->typeCtx->instantiateTuple(typeSet);
   Unification us;
   generics[0].type->unify(t.get(), &us);
 }

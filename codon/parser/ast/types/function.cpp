@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <memory>
 #include <string>
@@ -97,6 +97,10 @@ bool FuncType::canRealize() const {
   if (!skipSelf)
     generics &= (!funcParent || funcParent->canRealize());
   return generics;
+}
+
+std::string FuncType::realizedTypeName() const {
+  return this->ClassType::realizedName();
 }
 
 bool FuncType::isInstantiated() const {

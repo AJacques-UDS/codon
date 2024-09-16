@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <string>
 #include <tuple>
@@ -151,7 +151,7 @@ StmtPtr SimplifyVisitor::transformPattern(const ExprPtr &var, ExprPtr pattern,
                                suite));
   } else if (auto eb = pattern->getBinary()) {
     // Or pattern
-    if (eb->op == "|") {
+    if (eb->op == "|" || eb->op == "||") {
       return N<SuiteStmt>(transformPattern(clone(var), clone(eb->lexpr), clone(suite)),
                           transformPattern(clone(var), clone(eb->rexpr), suite));
     }

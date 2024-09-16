@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #pragma once
 
@@ -177,6 +177,10 @@ private: // Node typechecking rules
   ExprPtr partializeFunction(const types::FuncTypePtr &);
   std::shared_ptr<types::RecordType> getFuncTypeBase(size_t);
 
+public:
+  types::FuncTypePtr makeFunctionType(FunctionStmt *);
+
+private:
   /* Classes (class.cpp) */
   void visit(ClassStmt *) override;
   void parseBaseClasses(ClassStmt *);
@@ -216,7 +220,8 @@ private:
   types::FuncTypePtr
   findBestMethod(const types::ClassTypePtr &typ, const std::string &member,
                  const std::vector<std::pair<std::string, types::TypePtr>> &args);
-  int canCall(const types::FuncTypePtr &, const std::vector<CallExpr::Arg> &);
+  int canCall(const types::FuncTypePtr &, const std::vector<CallExpr::Arg> &,
+              std::shared_ptr<types::PartialType> = nullptr);
   std::vector<types::FuncTypePtr>
   findMatchingMethods(const types::ClassTypePtr &typ,
                       const std::vector<types::FuncTypePtr> &methods,
@@ -227,7 +232,8 @@ private:
   StmtPtr prepareVTables();
 
 public:
-  bool isTuple(const std::string &s) const { return startswith(s, TYPE_TUPLE); }
+  bool isTuple(const std::string &s) const { return s == TYPE_TUPLE; }
+  std::vector<Cache::Class::ClassField> &getClassFields(types::ClassType *);
 
   friend class Cache;
   friend class types::CallableTrait;

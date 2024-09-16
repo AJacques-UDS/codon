@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <string>
 #include <tuple>
@@ -117,7 +117,7 @@ void TypecheckVisitor::visit(ClassStmt *stmt) {
     LOG_REALIZE("       - member: {}: {}", m.name, m.type);
 }
 
-/// Generate a tuple class `Tuple.N[T1,...,TN]`.
+/// Generate a tuple class `Tuple[T1,...,TN]`.
 /// @param len       Tuple length (`N`)
 /// @param name      Tuple name. `Tuple` by default.
 ///                  Can be something else (e.g., `KwTuple`)
@@ -151,25 +151,47 @@ std::string TypecheckVisitor::generateTuple(size_t len, const std::string &name,
     StmtPtr stmt = N<ClassStmt>(ctx->cache->generateSrcInfo(), typeName, args, nullptr,
                                 std::vector<ExprPtr>{N<IdExpr>("tuple")});
 
-    // Add getItem for KwArgs:
+    // Add helpers for KwArgs:
     //   `def __getitem__(self, key: Static[str]): return getattr(self, key)`
+    //   `def __contains__(self, key: Static[str]): return hasattr(self, key)`
     auto getItem = N<FunctionStmt>(
         "__getitem__", nullptr,
         std::vector<Param>{Param{"self"}, Param{"key", N<IndexExpr>(N<IdExpr>("Static"),
                                                                     N<IdExpr>("str"))}},
         N<SuiteStmt>(N<ReturnStmt>(
             N<CallExpr>(N<IdExpr>("getattr"), N<IdExpr>("self"), N<IdExpr>("key")))));
+    auto contains = N<FunctionStmt>(
+        "__contains__", nullptr,
+        std::vector<Param>{Param{"self"}, Param{"key", N<IndexExpr>(N<IdExpr>("Static"),
+                                                                    N<IdExpr>("str"))}},
+        N<SuiteStmt>(N<ReturnStmt>(
+            N<CallExpr>(N<IdExpr>("hasattr"), N<IdExpr>("self"), N<IdExpr>("key")))));
+    auto getDef = N<FunctionStmt>(
+        "get", nullptr,
+        std::vector<Param>{
+            Param{"self"},
+            Param{"key", N<IndexExpr>(N<IdExpr>("Static"), N<IdExpr>("str"))},
+            Param{"default", nullptr, N<CallExpr>(N<IdExpr>("NoneType"))}},
+        N<SuiteStmt>(N<ReturnStmt>(
+            N<CallExpr>(N<DotExpr>(N<IdExpr>("__internal__"), "kwargs_get"),
+                        N<IdExpr>("self"), N<IdExpr>("key"), N<IdExpr>("default")))));
     if (startswith(typeName, TYPE_KWTUPLE))
-      stmt->getClass()->suite = getItem;
+      stmt->getClass()->suite = N<SuiteStmt>(getItem, contains, getDef);
 
-    // Add getItem for KwArgs:
-    //   `def __repr__(self,): return __magic__.repr_partial(self)`
+    // Add repr and call for partials:
+    //   `def __repr__(self): return __magic__.repr_partial(self)`
     auto repr = N<FunctionStmt>(
         "__repr__", nullptr, std::vector<Param>{Param{"self"}},
         N<SuiteStmt>(N<ReturnStmt>(N<CallExpr>(
             N<DotExpr>(N<IdExpr>("__magic__"), "repr_partial"), N<IdExpr>("self")))));
+    auto pcall = N<FunctionStmt>(
+        "__call__", nullptr,
+        std::vector<Param>{Param{"self"}, Param{"*args"}, Param{"**kwargs"}},
+        N<SuiteStmt>(
+            N<ReturnStmt>(N<CallExpr>(N<IdExpr>("self"), N<StarExpr>(N<IdExpr>("args")),
+                                      N<KeywordStarExpr>(N<IdExpr>("kwargs"))))));
     if (startswith(typeName, TYPE_PARTIAL))
-      stmt->getClass()->suite = repr;
+      stmt->getClass()->suite = N<SuiteStmt>(repr, pcall);
 
     // Simplify in the standard library context and type check
     stmt = SimplifyVisitor::apply(ctx->cache->imports[STDLIB_IMPORT].ctx, stmt,

@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #pragma once
 
@@ -78,12 +78,15 @@ struct RecordType : public ClassType {
   /// List of tuple arguments.
   std::vector<TypePtr> args;
   bool noTuple;
+  std::shared_ptr<StaticType> repeats = nullptr;
 
   explicit RecordType(
       Cache *cache, std::string name, std::string niceName,
       std::vector<ClassType::Generic> generics = std::vector<ClassType::Generic>(),
-      std::vector<TypePtr> args = std::vector<TypePtr>(), bool noTuple = false);
-  RecordType(const ClassTypePtr &base, std::vector<TypePtr> args, bool noTuple = false);
+      std::vector<TypePtr> args = std::vector<TypePtr>(), bool noTuple = false,
+      const std::shared_ptr<StaticType> &repeats = nullptr);
+  RecordType(const ClassTypePtr &base, std::vector<TypePtr> args, bool noTuple = false,
+             const std::shared_ptr<StaticType> &repeats = nullptr);
 
 public:
   int unify(Type *typ, Unification *undo) override;
@@ -96,11 +99,16 @@ public:
   bool canRealize() const override;
   bool isInstantiated() const override;
   std::string debugString(char mode) const override;
+  std::string realizedName() const override;
+  std::string realizedTypeName() const override;
 
   std::shared_ptr<RecordType> getRecord() override {
     return std::static_pointer_cast<RecordType>(shared_from_this());
   }
   std::shared_ptr<RecordType> getHeterogenousTuple() override;
+
+  int64_t getRepeats() const;
+  void flatten();
 };
 
 } // namespace codon::ast::types
@@ -109,8 +117,8 @@ template <>
 struct fmt::formatter<codon::ast::types::ClassType::Generic>
     : fmt::formatter<std::string_view> {
   template <typename FormatContext>
-  auto format(const codon::ast::types::ClassType::Generic &p, FormatContext &ctx) const
-      -> decltype(ctx.out()) {
+  auto format(const codon::ast::types::ClassType::Generic &p,
+              FormatContext &ctx) const -> decltype(ctx.out()) {
     return fmt::format_to(ctx.out(), "({}{})",
                           p.name.empty() ? "" : fmt::format("{} = ", p.name), p.type);
   }

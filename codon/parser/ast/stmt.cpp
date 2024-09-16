@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include "stmt.h"
 
@@ -154,12 +154,12 @@ ForStmt::ForStmt(ExprPtr var, ExprPtr iter, StmtPtr suite, StmtPtr elseSuite,
                  ExprPtr decorator, std::vector<CallExpr::Arg> ompArgs)
     : Stmt(), var(std::move(var)), iter(std::move(iter)), suite(std::move(suite)),
       elseSuite(std::move(elseSuite)), decorator(std::move(decorator)),
-      ompArgs(std::move(ompArgs)), wrapped(false) {}
+      ompArgs(std::move(ompArgs)), wrapped(false), flat(false) {}
 ForStmt::ForStmt(const ForStmt &stmt)
     : Stmt(stmt), var(ast::clone(stmt.var)), iter(ast::clone(stmt.iter)),
       suite(ast::clone(stmt.suite)), elseSuite(ast::clone(stmt.elseSuite)),
       decorator(ast::clone(stmt.decorator)), ompArgs(ast::clone_nop(stmt.ompArgs)),
-      wrapped(stmt.wrapped) {}
+      wrapped(stmt.wrapped), flat(stmt.flat) {}
 std::string ForStmt::toString(int indent) const {
   std::string pad = indent > 0 ? ("\n" + std::string(indent + INDENT_SIZE, ' ')) : " ";
   std::string attr;
@@ -324,6 +324,7 @@ const std::string Attr::CVarArg = ".__vararg__";
 const std::string Attr::Method = ".__method__";
 const std::string Attr::Capture = ".__capture__";
 const std::string Attr::HasSelf = ".__hasself__";
+const std::string Attr::IsGenerator = ".__generator__";
 const std::string Attr::Extend = "extend";
 const std::string Attr::Tuple = "tuple";
 const std::string Attr::Test = "std.internal.attributes.test";
@@ -672,8 +673,6 @@ void ClassStmt::parseDecorators() {
       E(Error::CLASS_BAD_DECORATOR, d);
     }
   }
-  if (startswith(name, TYPE_TUPLE))
-    tupleMagics["contains"] = true;
   if (attributes.has("deduce"))
     tupleMagics["new"] = false;
   if (!attributes.has(Attr::Tuple)) {
@@ -681,12 +680,7 @@ void ClassStmt::parseDecorators() {
     tupleMagics["new"] = tupleMagics["raw"] = true;
     tupleMagics["len"] = false;
   }
-  if (startswith(name, TYPE_TUPLE)) {
-    tupleMagics["add"] = true;
-    tupleMagics["mul"] = true;
-  } else {
-    tupleMagics["dict"] = true;
-  }
+  tupleMagics["dict"] = true;
   // Internal classes do not get any auto-generated members.
   attributes.magics.clear();
   if (!attributes.has(Attr::Internal)) {

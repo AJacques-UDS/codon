@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <memory>
 #include <string>
@@ -221,8 +221,20 @@ void SimplifyVisitor::visit(ClassStmt *stmt) {
     // Add class methods
     for (const auto &sp : getClassMethods(stmt->suite))
       if (sp && sp->getFunction()) {
-        if (sp.get() != autoDeducedInit.second)
+        if (sp.get() != autoDeducedInit.second) {
+          auto &ds = sp->getFunction()->decorators;
+          for (auto &dc : ds) {
+            if (auto d = dc->getDot()) {
+              if (d->member == "setter" and d->expr->isId(sp->getFunction()->name) &&
+                  sp->getFunction()->args.size() == 2) {
+                sp->getFunction()->name = format(".set_{}", sp->getFunction()->name);
+                dc = nullptr;
+                break;
+              }
+            }
+          }
           fnStmts.push_back(transform(sp));
+        }
       }
 
     // After popping context block, record types and nested classes will disappear.
@@ -528,7 +540,23 @@ StmtPtr SimplifyVisitor::codegenMagic(const std::string &op, const ExprPtr &typE
       // Classes: def __new__() -> T
       stmts.emplace_back(N<ReturnStmt>(N<CallExpr>(NS(op), typExpr->clone())));
     }
-  } else if (op == "init") {
+  }
+  // else if (startswith(op, "new.")) {
+  //   // special handle for tuple[t1, t2, ...]
+  //   int sz = atoi(op.substr(4).c_str());
+  //   std::vector<ExprPtr> ts;
+  //   for (int i = 0; i < sz; i++) {
+  //     fargs.emplace_back(format("a{}", i + 1), I(format("T{}", i + 1)));
+  //     ts.emplace_back(I(format("T{}", i + 1)));
+  //   }
+  //   for (int i = 0; i < sz; i++) {
+  //     fargs.emplace_back(format("T{}", i + 1), I("type"));
+  //   }
+  //   ret = N<InstantiateExpr>(I(TYPE_TUPLE), ts);
+  //   ret->markType();
+  //   attr.set(Attr::Internal);
+  // }
+  else if (op == "init") {
     // Classes: def __init__(self: T, a1: T1, ..., aN: TN) -> None:
     //            self.aI = aI ...
     ret = I("NoneType");

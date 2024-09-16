@@ -1,4 +1,4 @@
-# Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+# Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 # runtime functions
 from C import seq_print(str)
@@ -27,6 +27,16 @@ def seq_str_str(a: str, fmt: str, error: Ptr[bool]) -> str:
 @nocapture
 @C
 def seq_str_ptr(a: cobj, fmt: str, error: Ptr[bool]) -> str:
+    pass
+
+@nocapture
+@C
+def seq_int_from_str(a: str, b: Ptr[cobj], c: i32) -> int:
+    pass
+
+@nocapture
+@C
+def seq_float_from_str(a: str, b: Ptr[cobj]) -> float:
     pass
 
 @pure
@@ -647,16 +657,6 @@ def free(a: cobj) -> None:
 def atoi(a: cobj) -> int:
     pass
 
-@nocapture
-@C
-def strtoll(a: cobj, b: Ptr[cobj], c: i32) -> int:
-    pass
-
-@nocapture
-@C
-def strtod(a: cobj, b: Ptr[cobj]) -> float:
-    pass
-
 # <zlib.h>
 @nocapture
 @C
@@ -706,6 +706,37 @@ def gzseek(a: cobj, b: int, c: i32) -> int:
 @nocapture
 @C
 def gzflush(a: cobj, b: i32) -> i32:
+    pass
+
+# <bzlib.h>
+@nocapture
+@C
+def BZ2_bzopen(a: cobj, b: cobj) -> cobj:
+    pass
+
+@nocapture
+@C
+def BZ2_bzread(a: cobj, b: cobj, c: i32) -> i32:
+    pass
+
+@nocapture
+@C
+def BZ2_bzwrite(a: cobj, b: cobj, c: i32) -> i32:
+    pass
+
+@nocapture
+@C
+def BZ2_bzflush(a: cobj) -> i32:
+    pass
+
+@nocapture
+@C
+def BZ2_bzclose(a: cobj) -> None:
+    pass
+
+@nocapture
+@C
+def BZ2_bzerror(a: cobj, b: Ptr[i32]) -> cobj:
     pass
 
 # <string.h>

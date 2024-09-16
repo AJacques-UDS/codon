@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #pragma once
 
@@ -20,7 +20,7 @@
 #define STDLIB_IMPORT ":stdlib:"
 #define STDLIB_INTERNAL_MODULE "internal"
 
-#define TYPE_TUPLE "Tuple.N"
+#define TYPE_TUPLE "Tuple"
 #define TYPE_KWTUPLE "KwTuple.N"
 #define TYPE_TYPEVAR "TypeVar"
 #define TYPE_CALLABLE "Callable"
@@ -80,6 +80,8 @@ struct Cache : public std::enable_shared_from_this<Cache> {
     std::vector<std::string> content;
     /// Relative module name (e.g., `foo.bar`)
     std::string moduleName;
+    /// Set if loaded at toplevel
+    bool loadedAtToplevel = true;
   };
 
   /// Absolute path of seqc executable (if available).
@@ -95,7 +97,7 @@ struct Cache : public std::enable_shared_from_this<Cache> {
 
   /// Set of unique (canonical) global identifiers for marking such variables as global
   /// in code-generation step and in JIT.
-  std::map<std::string, ir::Var *> globals;
+  std::map<std::string, std::pair<bool, ir::Var *>> globals;
 
   /// Stores class data for each class (type) in the source code.
   struct Class {

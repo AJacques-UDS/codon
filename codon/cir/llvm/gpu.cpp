@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include "gpu.h"
 
@@ -393,8 +393,9 @@ void remapFunctions(llvm::Module *M) {
        }},
 
       {"seq_throw",
-       [](llvm::IRBuilder<> &B,
-          const std::vector<llvm::Value *> &args) { B.CreateUnreachable(); }},
+       [](llvm::IRBuilder<> &B, const std::vector<llvm::Value *> &args) {
+         B.CreateUnreachable();
+       }},
   };
 
   for (auto &pair : remapping) {
@@ -499,6 +500,14 @@ void moduleToPTX(llvm::Module *M, const std::string &filename,
   // Link libdevice and other cleanup.
   linkLibdevice(M, libdevice);
   remapFunctions(M);
+
+  // Strip debug info and remove noinline from functions (added in debug mode).
+  // Also, tell LLVM that all functions will return.
+  for (auto &F : *M) {
+    F.removeFnAttr(llvm::Attribute::AttrKind::NoInline);
+    F.setWillReturn();
+  }
+  llvm::StripDebugInfo(*M);
 
   // Run NVPTX passes and general opt pipeline.
   {

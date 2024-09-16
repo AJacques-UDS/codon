@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #pragma once
 
@@ -129,6 +129,9 @@ struct SimplifyContext : public Context<SimplifyItem> {
       /// List of variables "seen" before their assignment within a loop.
       /// Used to dominate variables that are updated within a loop.
       std::unordered_set<std::string> seenVars;
+      /// False if a loop has continue/break statement. Used for flattening static
+      /// loops.
+      bool flat = true;
     };
     std::vector<Loop> loops;
 

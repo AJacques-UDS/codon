@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <string>
 #include <tuple>
@@ -34,19 +34,27 @@ void TypecheckVisitor::visit(AssignStmt *stmt) {
   if (auto changed = in(ctx->cache->replacements, lhs)) {
     while (auto s = in(ctx->cache->replacements, lhs))
       lhs = changed->first, changed = s;
-    if (stmt->rhs && changed->second) {
-      // Mark the dominating binding as used: `var.__used__ = True`
-      auto u =
-          N<AssignStmt>(N<IdExpr>(fmt::format("{}.__used__", lhs)), N<BoolExpr>(true));
-      u->setUpdate();
-      prependStmts->push_back(transform(u));
-    } else if (changed->second && !stmt->rhs) {
-      // This assignment was a declaration only. Just mark the dominating binding as
-      // used: `var.__used__ = True`
-      stmt->lhs = N<IdExpr>(fmt::format("{}.__used__", lhs));
-      stmt->rhs = N<BoolExpr>(true);
+    if (changed->second) { // has __used__ binding
+      if (stmt->rhs) {
+        // Mark the dominating binding as used: `var.__used__ = True`
+        auto u = N<AssignStmt>(N<IdExpr>(fmt::format("{}.__used__", lhs)),
+                               N<BoolExpr>(true));
+        u->setUpdate();
+        prependStmts->push_back(transform(u));
+      } else {
+        // This assignment was a declaration only. Just mark the dominating binding as
+        // used: `var.__used__ = True`
+        stmt->lhs = N<IdExpr>(fmt::format("{}.__used__", lhs));
+        stmt->rhs = N<BoolExpr>(true);
+      }
     }
-    seqassert(stmt->rhs, "bad domination statement: '{}'", stmt->toString());
+
+    if (endswith(lhs, ".__used__") || !stmt->rhs) {
+      // unneeded declaration (unnecessary used or binding)
+      resultStmt = transform(N<SuiteStmt>());
+      return;
+    }
+
     // Change this to the update and follow the update logic
     stmt->setUpdate();
     transformUpdate(stmt);
@@ -64,6 +72,8 @@ void TypecheckVisitor::visit(AssignStmt *stmt) {
             ctx->instantiate(stmt->type->getSrcInfo(), stmt->type->getType()));
     }
     ctx->add(TypecheckItem::Var, lhs, stmt->lhs->type);
+    if (in(ctx->cache->globals, lhs))
+      ctx->cache->globals[lhs].first = true;
     if (realize(stmt->lhs->type) || !stmt->type)
       stmt->setDone();
   } else if (stmt->type && stmt->type->getType()->isStaticType()) {
@@ -76,6 +86,7 @@ void TypecheckVisitor::visit(AssignStmt *stmt) {
     auto val = ctx->add(TypecheckItem::Var, lhs, stmt->lhs->type);
     if (in(ctx->cache->globals, lhs)) {
       // Make globals always visible!
+      ctx->cache->globals[lhs].first = true;
       ctx->addToplevel(lhs, val);
     }
     if (realize(stmt->lhs->type))
@@ -104,6 +115,7 @@ void TypecheckVisitor::visit(AssignStmt *stmt) {
 
     if (in(ctx->cache->globals, lhs)) {
       // Make globals always visible!
+      ctx->cache->globals[lhs].first = true;
       ctx->addToplevel(lhs, val);
       if (kind != TypecheckItem::Var)
         ctx->cache->globals.erase(lhs);
@@ -161,9 +173,16 @@ void TypecheckVisitor::visit(AssignMemberStmt *stmt) {
   transform(stmt->lhs);
 
   if (auto lhsClass = stmt->lhs->getType()->getClass()) {
-    auto member = ctx->findMember(lhsClass->name, stmt->member);
+    auto member = ctx->findMember(lhsClass, stmt->member);
 
-    if (!member && stmt->lhs->isType()) {
+    if (!member) {
+      // Case: setters
+      auto setters = ctx->findMethod(lhsClass.get(), format(".set_{}", stmt->member));
+      if (!setters.empty()) {
+        resultStmt = transform(N<ExprStmt>(
+            N<CallExpr>(N<IdExpr>(setters[0]->ast->name), stmt->lhs, stmt->rhs)));
+        return;
+      }
       // Case: class variables
       if (auto cls = in(ctx->cache->classes, lhsClass->name))
         if (auto var = in(cls->classVars, stmt->member)) {

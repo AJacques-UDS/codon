@@ -1,8 +1,9 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include "common.h"
 
 #include <cinttypes>
+#include <climits>
 #include <string>
 #include <vector>
 

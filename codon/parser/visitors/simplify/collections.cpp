@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <tuple>
 #include <vector>
@@ -59,7 +59,7 @@ void SimplifyVisitor::visit(GeneratorExpr *expr) {
   bool canOptimize = expr->kind == GeneratorExpr::ListGenerator && loops.size() == 1 &&
                      loops[0].conds.empty();
   if (canOptimize) {
-    auto iter = transform(loops[0].gen);
+    auto iter = transform(clone(loops[0].gen));
     IdExpr *id;
     if (iter->getCall() && (id = iter->getCall()->expr->getId())) {
       // Turn off this optimization for static items

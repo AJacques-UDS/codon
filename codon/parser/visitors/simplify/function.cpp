@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <memory>
 #include <string>
@@ -20,6 +20,7 @@ namespace codon::ast {
 void SimplifyVisitor::visit(YieldExpr *expr) {
   if (!ctx->inFunction())
     E(Error::FN_OUTSIDE_ERROR, expr, "yield");
+  ctx->getBase()->attributes->set(Attr::IsGenerator);
 }
 
 /// Transform lambdas. Capture outer expressions.
@@ -45,6 +46,7 @@ void SimplifyVisitor::visit(YieldStmt *stmt) {
   if (!ctx->inFunction())
     E(Error::FN_OUTSIDE_ERROR, stmt, "yield");
   transform(stmt->expr);
+  ctx->getBase()->attributes->set(Attr::IsGenerator);
 }
 
 /// Transform `yield from` statements.
@@ -113,6 +115,8 @@ void SimplifyVisitor::visit(FunctionStmt *stmt) {
 
   // Parse attributes
   for (auto i = stmt->decorators.size(); i-- > 0;) {
+    if (!stmt->decorators[i])
+      continue;
     auto [isAttr, attrName] = getDecorator(stmt->decorators[i]);
     if (!attrName.empty()) {
       stmt->attributes.set(attrName);
@@ -136,8 +140,9 @@ void SimplifyVisitor::visit(FunctionStmt *stmt) {
     // Case 2: function overload
     if (auto c = ctx->find(stmt->name)) {
       if (c->isFunc() && c->getModule() == ctx->getModule() &&
-          c->getBaseName() == ctx->getBaseName())
+          c->getBaseName() == ctx->getBaseName()) {
         rootName = c->canonicalName;
+      }
     }
   }
   if (rootName.empty())
@@ -151,7 +156,7 @@ void SimplifyVisitor::visit(FunctionStmt *stmt) {
   // Function bindings cannot be dominated either
   if (!isClassMember) {
     auto funcVal = ctx->find(stmt->name);
-    if (funcVal && funcVal->noShadow)
+    if (funcVal && funcVal->moduleName == ctx->getModule() && funcVal->noShadow)
       E(Error::CLASS_INVALID_BIND, stmt, stmt->name);
     funcVal = ctx->addFunc(stmt->name, rootName, stmt->getSrcInfo());
     ctx->addAlwaysVisible(funcVal);

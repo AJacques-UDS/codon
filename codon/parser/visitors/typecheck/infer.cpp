@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <limits>
 #include <map>
@@ -53,9 +53,12 @@ StmtPtr TypecheckVisitor::inferTypes(StmtPtr result, bool isToplevel) {
        ctx->getRealizationBase()->iteration++) {
     LOG_TYPECHECK("[iter] {} :: {}", ctx->getRealizationBase()->name,
                   ctx->getRealizationBase()->iteration);
-    if (ctx->getRealizationBase()->iteration >= MAX_TYPECHECK_ITER)
+    if (ctx->getRealizationBase()->iteration >= MAX_TYPECHECK_ITER) {
       error(result, "cannot typecheck '{}' in reasonable time",
-            ctx->cache->rev(ctx->getRealizationBase()->name));
+            ctx->getRealizationBase()->name.empty()
+                ? "toplevel"
+                : ctx->cache->rev(ctx->getRealizationBase()->name));
+    }
 
     // Keep iterating until:
     //   (1) success: the statement is marked as done; or
@@ -86,6 +89,18 @@ StmtPtr TypecheckVisitor::inferTypes(StmtPtr result, bool isToplevel) {
     }
 
     if (result->isDone()) {
+      // Special union case: if union cannot be inferred return type is Union[NoneType]
+      if (auto tr = ctx->getRealizationBase()->returnType) {
+        if (auto tu = tr->getUnion()) {
+          if (!tu->isSealed()) {
+            if (tu->pendingTypes[0]->getLink() &&
+                tu->pendingTypes[0]->getLink()->kind == LinkType::Unbound) {
+              tu->addType(ctx->forceFind("NoneType")->type);
+              tu->seal();
+            }
+          }
+        }
+      }
       break;
     } else if (changedNodes) {
       continue;
@@ -96,8 +111,9 @@ StmtPtr TypecheckVisitor::inferTypes(StmtPtr result, bool isToplevel) {
       bool anotherRound = false;
       // Special case: return type might have default as well (e.g., Union)
       if (ctx->getRealizationBase()->returnType)
-        ctx->pendingDefaults.insert(ctx->getRealizationBase()->returnType);
-      for (auto &unbound : ctx->pendingDefaults) {
+        ctx->getRealizationBase()->pendingDefaults.insert(
+            ctx->getRealizationBase()->returnType);
+      for (auto &unbound : ctx->getRealizationBase()->pendingDefaults) {
         if (auto tu = unbound->getUnion()) {
           // Seal all dynamic unions after the iteration is over
           if (!tu->isSealed()) {
@@ -110,7 +126,7 @@ StmtPtr TypecheckVisitor::inferTypes(StmtPtr result, bool isToplevel) {
             anotherRound = true;
         }
       }
-      ctx->pendingDefaults.clear();
+      ctx->getRealizationBase()->pendingDefaults.clear();
       if (anotherRound)
         continue;
 
@@ -183,7 +199,6 @@ types::TypePtr TypecheckVisitor::realize(types::TypePtr typ) {
         }
         e.trackRealize(fmt::format("{}{}", name, name_args), getSrcInfo());
       }
-
     } else {
       e.trackRealize(typ->prettyString(), getSrcInfo());
     }
@@ -198,9 +213,12 @@ types::TypePtr TypecheckVisitor::realizeType(types::ClassType *type) {
   if (!type || !type->canRealize())
     return nullptr;
 
+  if (auto tr = type->getRecord())
+    tr->flatten();
+
   // Check if the type fields are all initialized
   // (sometimes that's not the case: e.g., `class X: x: List[X]`)
-  for (auto &field : ctx->cache->classes[type->name].fields) {
+  for (auto field : getClassFields(type)) {
     if (!field.type)
       return nullptr;
   }
@@ -247,16 +265,24 @@ types::TypePtr TypecheckVisitor::realizeType(types::ClassType *type) {
   std::vector<ir::types::Type *> typeArgs;   // needed for IR
   std::vector<std::string> names;            // needed for IR
   std::map<std::string, SrcInfo> memberInfo; // needed for IR
-  for (auto &field : ctx->cache->classes[realized->name].fields) {
+  if (realized->is(TYPE_TUPLE))
+    realized->getRecord()->flatten();
+  int i = 0;
+  for (auto &field : getClassFields(realized.get())) {
     auto ftyp = ctx->instantiate(field.type, realized);
+    // HACK: repeated tuples have no generics so this is needed to fix the instantiation
+    // above
+    if (realized->is(TYPE_TUPLE))
+      unify(ftyp, realized->getRecord()->args[i]);
+
     if (!realize(ftyp))
       E(Error::TYPE_CANNOT_REALIZE_ATTR, getSrcInfo(), field.name,
         ftyp->prettyString());
-    LOG_REALIZE("- member: {} -> {}: {}", field.name, field.type, ftyp);
     realization->fields.emplace_back(field.name, ftyp);
     names.emplace_back(field.name);
     typeArgs.emplace_back(makeIRType(ftyp->getClass().get()));
     memberInfo[field.name] = field.type->getSrcInfo();
+    i++;
   }
 
   // Set IR attributes
@@ -339,17 +365,17 @@ types::TypePtr TypecheckVisitor::realizeFunc(types::FuncType *type, bool force) 
 
     if (!ret) {
       realizations.erase(key);
-      if (!startswith(ast->name, "._lambda")) {
-        // Lambda typecheck failures are "ignored" as they are treated as statements,
-        // not functions.
-        // TODO: generalize this further.
-        // LOG("{}", ast->suite->toString(2));
-        error("cannot typecheck the program");
-      }
       ctx->realizationBases.pop_back();
       ctx->popBlock();
       ctx->typecheckLevel--;
       getLogger().level--;
+      if (!startswith(ast->name, "._lambda")) {
+        // Lambda typecheck failures are "ignored" as they are treated as statements,
+        // not functions.
+        // TODO: generalize this further.
+        LOG_REALIZE("[error] {}", ast->suite->toString(2));
+        error("cannot typecheck the program");
+      }
       return nullptr; // inference must be delayed
     }
 
@@ -431,9 +457,7 @@ StmtPtr TypecheckVisitor::prepareVTables() {
                         NT<InstantiateExpr>(
                             NT<IdExpr>("Function"),
                             std::vector<ExprPtr>{
-                                NT<InstantiateExpr>(
-                                    NT<IdExpr>(format("{}{}", TYPE_TUPLE, ids.size())),
-                                    ids),
+                                NT<InstantiateExpr>(NT<IdExpr>(TYPE_TUPLE), ids),
                                 NT<IdExpr>(fn->getRetType()->realizedName())}),
                         N<IdExpr>(fn->realizedName())),
                     "__raw__")),
@@ -459,7 +483,7 @@ StmtPtr TypecheckVisitor::prepareVTables() {
     auto baseTyp = t->funcGenerics[0].type->getClass();
     auto derivedTyp = t->funcGenerics[1].type->getClass();
 
-    const auto &fields = ctx->cache->classes[derivedTyp->name].fields;
+    const auto &fields = getClassFields(derivedTyp.get());
     auto types = std::vector<ExprPtr>{};
     auto found = false;
     for (auto &f : fields) {
@@ -471,13 +495,11 @@ StmtPtr TypecheckVisitor::prepareVTables() {
         types.push_back(NT<IdExpr>(ft->realizedName()));
       }
     }
-    seqassert(found || ctx->cache->classes[baseTyp->name].fields.empty(),
+    seqassert(found || getClassFields(baseTyp.get()).empty(),
               "cannot find distance between {} and {}", derivedTyp->name,
               baseTyp->name);
     StmtPtr suite = N<ReturnStmt>(
-        N<DotExpr>(NT<InstantiateExpr>(
-                       NT<IdExpr>(format("{}{}", TYPE_TUPLE, types.size())), types),
-                   "__elemsize__"));
+        N<DotExpr>(NT<InstantiateExpr>(NT<IdExpr>(TYPE_TUPLE), types), "__elemsize__"));
     LOG_REALIZE("[poly] {} : {}", t, *suite);
     initDist.ast->suite = suite;
     t->ast = initDist.ast.get();
@@ -518,7 +540,7 @@ size_t TypecheckVisitor::getRealizationID(types::ClassType *cp, types::FuncType 
                  ->vtables[cp->realizedName()];
 
   // Add or extract thunk ID
-  size_t vid;
+  size_t vid = 0;
   if (auto i = in(vt.table, key)) {
     vid = i->second;
   } else {
@@ -644,6 +666,12 @@ ir::types::Type *TypecheckVisitor::makeIRType(types::ClassType *t) {
     handle = module->getFloatType();
   } else if (t->name == "float32") {
     handle = module->getFloat32Type();
+  } else if (t->name == "float16") {
+    handle = module->getFloat16Type();
+  } else if (t->name == "bfloat16") {
+    handle = module->getBFloat16Type();
+  } else if (t->name == "float128") {
+    handle = module->getFloat128Type();
   } else if (t->name == "str") {
     handle = module->getStringType();
   } else if (t->name == "Int" || t->name == "UInt") {
@@ -681,14 +709,19 @@ ir::types::Type *TypecheckVisitor::makeIRType(types::ClassType *t) {
     seqassert(types.size() == 1 && statics.size() == 1, "bad generics/statics");
     handle = module->unsafeGetVectorType(statics[0]->getInt(), types[0]);
   } else if (auto tr = t->getRecord()) {
+    seqassert(tr->getRepeats() >= 0, "repeats not resolved: '{}'", tr->debugString(2));
+    tr->flatten();
     std::vector<ir::types::Type *> typeArgs;
     std::vector<std::string> names;
     std::map<std::string, SrcInfo> memberInfo;
     for (int ai = 0; ai < tr->args.size(); ai++) {
-      names.emplace_back(ctx->cache->classes[t->name].fields[ai].name);
+      auto n = t->name == TYPE_TUPLE ? format("item{}", ai + 1)
+                                     : ctx->cache->classes[t->name].fields[ai].name;
+      names.emplace_back(n);
       typeArgs.emplace_back(forceFindIRType(tr->args[ai]));
-      memberInfo[ctx->cache->classes[t->name].fields[ai].name] =
-          ctx->cache->classes[t->name].fields[ai].type->getSrcInfo();
+      memberInfo[n] = t->name == TYPE_TUPLE
+                          ? tr->getSrcInfo()
+                          : ctx->cache->classes[t->name].fields[ai].type->getSrcInfo();
     }
     auto record =
         ir::cast<ir::types::RecordType>(module->unsafeGetMemberedType(realizedName));
@@ -815,125 +848,19 @@ TypecheckVisitor::generateSpecialAst(types::FuncType *type) {
         N<IdExpr>("__internal__.new_union:0"), N<IdExpr>(type->ast->args[0].name),
         N<IdExpr>(unionType->realizedTypeName())));
     ast->suite = suite;
-  } else if (startswith(ast->name, "__internal__.new_union:0")) {
-    // Special case: __internal__.new_union
-    // def __internal__.new_union(value, U[T0, ..., TN]):
-    //   if isinstance(value, T0):
-    //     return __internal__.union_make(0, value, U[T0, ..., TN])
-    //   if isinstance(value, Union[T0]):
-    //     return __internal__.union_make(
-    //       0, __internal__.get_union(value, T0), U[T0, ..., TN])
-    //   ... <for all T0...TN> ...
-    //   compile_error("invalid union constructor")
-    auto unionType = type->funcGenerics[0].type->getUnion();
-    auto unionTypes = unionType->getRealizationTypes();
-
-    auto objVar = ast->args[0].name;
-    auto suite = N<SuiteStmt>();
-    int tag = 0;
-    for (auto &t : unionTypes) {
-      suite->stmts.push_back(N<IfStmt>(
-          N<CallExpr>(N<IdExpr>("isinstance"), N<IdExpr>(objVar),
-                      NT<IdExpr>(t->realizedName())),
-          N<ReturnStmt>(N<CallExpr>(N<IdExpr>("__internal__.union_make:0"),
-                                    N<IntExpr>(tag), N<IdExpr>(objVar),
-                                    N<IdExpr>(unionType->realizedTypeName())))));
-      // Check for Union[T]
-      suite->stmts.push_back(N<IfStmt>(
-          N<CallExpr>(
-              N<IdExpr>("isinstance"), N<IdExpr>(objVar),
-              NT<InstantiateExpr>(NT<IdExpr>("Union"),
-                                  std::vector<ExprPtr>{NT<IdExpr>(t->realizedName())})),
-          N<ReturnStmt>(
-              N<CallExpr>(N<IdExpr>("__internal__.union_make:0"), N<IntExpr>(tag),
-                          N<CallExpr>(N<IdExpr>("__internal__.get_union:0"),
-                                      N<IdExpr>(objVar), NT<IdExpr>(t->realizedName())),
-                          N<IdExpr>(unionType->realizedTypeName())))));
-      tag++;
-    }
-    suite->stmts.push_back(N<ExprStmt>(N<CallExpr>(
-        N<IdExpr>("compile_error"), N<StringExpr>("invalid union constructor"))));
-    ast->suite = suite;
-  } else if (startswith(ast->name, "__internal__.get_union:0")) {
-    // Special case: __internal__.get_union
-    // def __internal__.new_union(union: Union[T0,...,TN], T):
-    //   if __internal__.union_get_tag(union) == 0:
-    //     return __internal__.union_get_data(union, T0)
-    //   ... <for all T0...TN>
-    //   raise TypeError("getter")
-    auto unionType = type->getArgTypes()[0]->getUnion();
-    auto unionTypes = unionType->getRealizationTypes();
-
-    auto targetType = type->funcGenerics[0].type;
-    auto selfVar = ast->args[0].name;
-    auto suite = N<SuiteStmt>();
-    int tag = 0;
-    for (auto t : unionTypes) {
-      if (t->realizedName() == targetType->realizedName()) {
-        suite->stmts.push_back(N<IfStmt>(
-            N<BinaryExpr>(N<CallExpr>(N<IdExpr>("__internal__.union_get_tag:0"),
-                                      N<IdExpr>(selfVar)),
-                          "==", N<IntExpr>(tag)),
-            N<ReturnStmt>(N<CallExpr>(N<IdExpr>("__internal__.union_get_data:0"),
-                                      N<IdExpr>(selfVar),
-                                      NT<IdExpr>(t->realizedName())))));
-      }
-      tag++;
-    }
-    suite->stmts.push_back(
-        N<ThrowStmt>(N<CallExpr>(N<IdExpr>("std.internal.types.error.TypeError"),
-                                 N<StringExpr>("invalid union getter"))));
-    ast->suite = suite;
-  } else if (startswith(ast->name, "__internal__._get_union_method:0")) {
-    // def __internal__._get_union_method(union: Union[T0,...,TN], method, *args, **kw):
-    //   if __internal__.union_get_tag(union) == 0:
-    //     return __internal__.union_get_data(union, T0).method(*args, **kw)
-    //   ... <for all T0...TN>
-    //   raise TypeError("call")
-    auto szt = type->funcGenerics[0].type->getStatic();
-    auto fnName = szt->evaluate().getString();
-    auto unionType = type->getArgTypes()[0]->getUnion();
-    auto unionTypes = unionType->getRealizationTypes();
-
-    auto selfVar = ast->args[0].name;
-    auto suite = N<SuiteStmt>();
-    int tag = 0;
-    for (auto &t : unionTypes) {
-      auto callee =
-          N<DotExpr>(N<CallExpr>(N<IdExpr>("__internal__.union_get_data:0"),
-                                 N<IdExpr>(selfVar), NT<IdExpr>(t->realizedName())),
-                     fnName);
-      auto args = N<StarExpr>(N<IdExpr>(ast->args[2].name.substr(1)));
-      auto kwargs = N<KeywordStarExpr>(N<IdExpr>(ast->args[3].name.substr(2)));
-      std::vector<CallExpr::Arg> callArgs;
-      ExprPtr check =
-          N<CallExpr>(N<IdExpr>("hasattr"), NT<IdExpr>(t->realizedName()),
-                      N<StringExpr>(fnName), args->clone(), kwargs->clone());
-      suite->stmts.push_back(N<IfStmt>(
-          N<BinaryExpr>(
-              check, "&&",
-              N<BinaryExpr>(N<CallExpr>(N<IdExpr>("__internal__.union_get_tag:0"),
-                                        N<IdExpr>(selfVar)),
-                            "==", N<IntExpr>(tag))),
-          N<SuiteStmt>(N<ReturnStmt>(N<CallExpr>(callee, args, kwargs)))));
-      tag++;
-    }
-    suite->stmts.push_back(
-        N<ThrowStmt>(N<CallExpr>(N<IdExpr>("std.internal.types.error.TypeError"),
-                                 N<StringExpr>("invalid union call"))));
-    // suite->stmts.push_back(N<ReturnStmt>(N<NoneExpr>()));
-    unify(type->getRetType(), ctx->instantiate(ctx->getType("Union")));
-    ast->suite = suite;
-  } else if (startswith(ast->name, "__internal__.get_union_first:0")) {
-    // def __internal__.get_union_first(union: Union[T0]):
+  } else if (startswith(ast->name, "__internal__.get_union_tag:0")) {
+    // def __internal__.get_union_tag(union: Union, tag: Static[int]):
     //   return __internal__.union_get_data(union, T0)
+    auto szt = type->funcGenerics[0].type->getStatic();
+    auto tag = szt->evaluate().getInt();
     auto unionType = type->getArgTypes()[0]->getUnion();
     auto unionTypes = unionType->getRealizationTypes();
-
+    if (tag < 0 || tag >= unionTypes.size())
+      E(Error::CUSTOM, getSrcInfo(), "bad union tag");
     auto selfVar = ast->args[0].name;
     auto suite = N<SuiteStmt>(N<ReturnStmt>(
         N<CallExpr>(N<IdExpr>("__internal__.union_get_data:0"), N<IdExpr>(selfVar),
-                    NT<IdExpr>(unionTypes[0]->realizedName()))));
+                    NT<IdExpr>(unionTypes[tag]->realizedName()))));
     ast->suite = suite;
   }
   return ast;

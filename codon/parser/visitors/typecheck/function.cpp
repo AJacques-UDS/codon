@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <string>
 #include <tuple>
@@ -29,7 +29,14 @@ void TypecheckVisitor::visit(YieldExpr *expr) {
 /// Also partialize functions if they are being returned.
 /// See @c wrapExpr for more details.
 void TypecheckVisitor::visit(ReturnStmt *stmt) {
-  if (transform(stmt->expr)) {
+  if (!stmt->expr && ctx->getRealizationBase()->type &&
+      ctx->getRealizationBase()->type->getFunc()->ast->hasAttr(Attr::IsGenerator)) {
+    stmt->setDone();
+  } else {
+    if (!stmt->expr) {
+      stmt->expr = N<CallExpr>(N<IdExpr>("NoneType"));
+    }
+    transform(stmt->expr);
     // Wrap expression to match the return type
     if (!ctx->getRealizationBase()->returnType->getUnbound())
       if (!wrapExpr(stmt->expr, ctx->getRealizationBase()->returnType)) {
@@ -44,10 +51,6 @@ void TypecheckVisitor::visit(ReturnStmt *stmt) {
     }
 
     unify(ctx->getRealizationBase()->returnType, stmt->expr->type);
-  } else {
-    // Just set the expr for the translation stage. However, do not unify the return
-    // type! This might be a `return` in a generator.
-    stmt->expr = transform(N<CallExpr>(N<IdExpr>("NoneType")));
   }
 
   // If we are not within conditional block, ignore later statements in this function.
@@ -55,15 +58,16 @@ void TypecheckVisitor::visit(ReturnStmt *stmt) {
   if (!ctx->blockLevel)
     ctx->returnEarly = true;
 
-  if (stmt->expr->isDone())
+  if (!stmt->expr || stmt->expr->isDone())
     stmt->setDone();
 }
 
 /// Typecheck yield statements. Empty yields assume `NoneType`.
 void TypecheckVisitor::visit(YieldStmt *stmt) {
   stmt->expr = transform(stmt->expr ? stmt->expr : N<CallExpr>(N<IdExpr>("NoneType")));
-  unify(ctx->getRealizationBase()->returnType,
-        ctx->instantiateGeneric(ctx->getType("Generator"), {stmt->expr->type}));
+
+  auto t = ctx->instantiateGeneric(ctx->getType("Generator"), {stmt->expr->type});
+  unify(ctx->getRealizationBase()->returnType, t);
 
   if (stmt->expr->isDone())
     stmt->setDone();
@@ -75,6 +79,42 @@ void TypecheckVisitor::visit(FunctionStmt *stmt) {
   // Function should be constructed only once
   stmt->setDone();
 
+  auto funcTyp = makeFunctionType(stmt);
+  // If this is a class method, update the method lookup table
+  bool isClassMember = !stmt->attributes.parentClass.empty();
+  if (isClassMember) {
+    auto m =
+        ctx->cache->getMethod(ctx->find(stmt->attributes.parentClass)->type->getClass(),
+                              ctx->cache->rev(stmt->name));
+    bool found = false;
+    for (auto &i : ctx->cache->overloads[m])
+      if (i.name == stmt->name) {
+        ctx->cache->functions[i.name].type = funcTyp;
+        found = true;
+        break;
+      }
+    seqassert(found, "cannot find matching class method for {}", stmt->name);
+  }
+
+  // Update the visited table
+  // Functions should always be visible, so add them to the toplevel
+  ctx->addToplevel(stmt->name,
+                   std::make_shared<TypecheckItem>(TypecheckItem::Func, funcTyp));
+  ctx->cache->functions[stmt->name].type = funcTyp;
+
+  // Ensure that functions with @C, @force_realize, and @export attributes can be
+  // realized
+  if (stmt->attributes.has(Attr::ForceRealize) || stmt->attributes.has(Attr::Export) ||
+      (stmt->attributes.has(Attr::C) && !stmt->attributes.has(Attr::CVarArg))) {
+    if (!funcTyp->canRealize())
+      E(Error::FN_REALIZE_BUILTIN, stmt);
+  }
+
+  // Debug information
+  LOG_REALIZE("[stmt] added func {}: {}", stmt->name, funcTyp);
+}
+
+types::FuncTypePtr TypecheckVisitor::makeFunctionType(FunctionStmt *stmt) {
   // Handle generics
   bool isClassMember = !stmt->attributes.parentClass.empty();
   auto explicits = std::vector<ClassType::Generic>();
@@ -124,6 +164,10 @@ void TypecheckVisitor::visit(FunctionStmt *stmt) {
   ctx->typecheckLevel++;
   if (stmt->ret) {
     unify(baseType->generics[1].type, transformType(stmt->ret)->getType());
+    if (stmt->ret->isId("Union")) {
+      baseType->generics[1].type->getUnion()->generics[0].type->getUnbound()->kind =
+          LinkType::Generic;
+    }
   } else {
     generics.push_back(unify(baseType->generics[1].type, ctx->getUnbound()));
   }
@@ -169,38 +213,7 @@ void TypecheckVisitor::visit(FunctionStmt *stmt) {
   }
   funcTyp =
       std::static_pointer_cast<FuncType>(funcTyp->generalize(ctx->typecheckLevel));
-
-  // If this is a class method, update the method lookup table
-  if (isClassMember) {
-    auto m =
-        ctx->cache->getMethod(ctx->find(stmt->attributes.parentClass)->type->getClass(),
-                              ctx->cache->rev(stmt->name));
-    bool found = false;
-    for (auto &i : ctx->cache->overloads[m])
-      if (i.name == stmt->name) {
-        ctx->cache->functions[i.name].type = funcTyp;
-        found = true;
-        break;
-      }
-    seqassert(found, "cannot find matching class method for {}", stmt->name);
-  }
-
-  // Update the visited table
-  // Functions should always be visible, so add them to the toplevel
-  ctx->addToplevel(stmt->name,
-                   std::make_shared<TypecheckItem>(TypecheckItem::Func, funcTyp));
-  ctx->cache->functions[stmt->name].type = funcTyp;
-
-  // Ensure that functions with @C, @force_realize, and @export attributes can be
-  // realized
-  if (stmt->attributes.has(Attr::ForceRealize) || stmt->attributes.has(Attr::Export) ||
-      (stmt->attributes.has(Attr::C) && !stmt->attributes.has(Attr::CVarArg))) {
-    if (!funcTyp->canRealize())
-      E(Error::FN_REALIZE_BUILTIN, stmt);
-  }
-
-  // Debug information
-  LOG_REALIZE("[stmt] added func {}: {}", stmt->name, funcTyp);
+  return funcTyp;
 }
 
 /// Make an empty partial call `fn(...)` for a given function.
@@ -232,11 +245,10 @@ ExprPtr TypecheckVisitor::partializeFunction(const types::FuncTypePtr &fn) {
   return call;
 }
 
-/// Generate and return `Function[Tuple.N[args...], ret]` type
+/// Generate and return `Function[Tuple[args...], ret]` type
 std::shared_ptr<RecordType> TypecheckVisitor::getFuncTypeBase(size_t nargs) {
   auto baseType = ctx->instantiate(ctx->forceFind("Function")->type)->getRecord();
-  unify(baseType->generics[0].type,
-        ctx->instantiate(ctx->forceFind(generateTuple(nargs))->type)->getRecord());
+  unify(baseType->generics[0].type, ctx->instantiateTuple(nargs)->getRecord());
   return baseType;
 }
 

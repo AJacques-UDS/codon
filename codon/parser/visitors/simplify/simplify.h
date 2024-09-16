@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #pragma once
 
@@ -20,7 +20,7 @@ namespace codon::ast {
  *  - All imports are flattened resulting in a single self-containing
  *    (and fairly large) AST
  *  - All identifiers are normalized (no two distinct objects share the same name)
- *  - Variadic classes (e.g., Tuple.N) are generated
+ *  - Variadic classes (e.g., Tuple) are generated
  *  - Any AST node that can be trivially expressed as a set of "simpler" nodes
  *    type is simplified. If a transformation requires a type information,
  *    it is done during the type checking.

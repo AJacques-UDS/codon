@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include <string>
 #include <tuple>
@@ -20,13 +20,7 @@ using namespace types;
 /// replace it with its value (e.g., a @c IntExpr ). Also ensure that the identifier of
 /// a generic function or a type is fully qualified (e.g., replace `Ptr` with
 /// `Ptr[byte]`).
-/// For tuple identifiers, generate appropriate class. See @c generateTuple for
-/// details.
 void TypecheckVisitor::visit(IdExpr *expr) {
-  // Generate tuple stubs if needed
-  if (isTuple(expr->value))
-    generateTuple(std::stoi(expr->value.substr(sizeof(TYPE_TUPLE) - 1)));
-
   // Replace identifiers that have been superseded by domination analysis during the
   // simplification
   while (auto s = in(ctx->cache->replacements, expr->value))
@@ -35,8 +29,9 @@ void TypecheckVisitor::visit(IdExpr *expr) {
   auto val = ctx->find(expr->value);
   if (!val) {
     // Handle overloads
-    if (in(ctx->cache->overloads, expr->value))
+    if (in(ctx->cache->overloads, expr->value)) {
       val = ctx->forceFind(getDispatch(expr->value)->ast->name);
+    }
     seqassert(val, "cannot find '{}'", expr->value);
   }
   unify(expr->type, ctx->instantiate(val->type));
@@ -154,6 +149,9 @@ ExprPtr TypecheckVisitor::transformDot(DotExpr *expr,
   if (expr->expr->type->getFunc() && expr->member == "__name__") {
     return transform(N<StringExpr>(expr->expr->type->prettyString()));
   }
+  if (expr->expr->type->getPartial() && expr->member == "__name__") {
+    return transform(N<StringExpr>(expr->expr->type->getPartial()->prettyString()));
+  }
   // Special case: fn.__llvm_name__ or obj.__llvm_name__
   if (expr->member == "__llvm_name__") {
     if (realize(expr->expr->type))
@@ -187,7 +185,7 @@ ExprPtr TypecheckVisitor::transformDot(DotExpr *expr,
     return nullptr;
 
   // Check if this is a method or member access
-  if (ctx->findMethod(typ->name, expr->member).empty())
+  if (ctx->findMethod(typ.get(), expr->member).empty())
     return getClassMember(expr, args);
   auto bestMethod = getBestOverload(expr, args);
 
@@ -210,10 +208,9 @@ ExprPtr TypecheckVisitor::transformDot(DotExpr *expr,
         std::vector<ExprPtr> ids;
         for (auto &t : fn->getArgTypes())
           ids.push_back(NT<IdExpr>(t->realizedName()));
-        auto name = generateTuple(ids.size());
         auto fnType = NT<InstantiateExpr>(
             NT<IdExpr>("Function"),
-            std::vector<ExprPtr>{NT<InstantiateExpr>(NT<IdExpr>(name), ids),
+            std::vector<ExprPtr>{NT<InstantiateExpr>(NT<IdExpr>(TYPE_TUPLE), ids),
                                  NT<IdExpr>(fn->getRetType()->realizedName())});
         // Function[Tuple[TArg1, TArg2, ...],TRet](
         //    __internal__.class_get_rtti_vtable(expr)[T[VIRTUAL_ID]]
@@ -264,7 +261,7 @@ ExprPtr TypecheckVisitor::getClassMember(DotExpr *expr,
 
   // Case: object member access (`obj.member`)
   if (!expr->expr->isType()) {
-    if (auto member = ctx->findMember(typ->name, expr->member)) {
+    if (auto member = ctx->findMember(typ, expr->member)) {
       unify(expr->type, ctx->instantiate(member, typ));
       if (expr->expr->isDone() && realize(expr->type))
         expr->setDone();
@@ -333,14 +330,19 @@ ExprPtr TypecheckVisitor::getClassMember(DotExpr *expr,
 
   // Case: transform `union.m` to `__internal__.get_union_method(union, "m", ...)`
   if (typ->getUnion()) {
+    if (!typ->canRealize())
+      return nullptr; // delay!
+    // bool isMember = false;
+    // for (auto &t: typ->getUnion()->getRealizationTypes())
+    //   if (ctx->findMethod(t.get(), expr->member).empty())
     return transform(N<CallExpr>(
-        N<IdExpr>("__internal__.get_union_method:0"),
+        N<IdExpr>("__internal__.union_member:0"),
         std::vector<CallExpr::Arg>{{"union", expr->expr},
-                                   {"method", N<StringExpr>(expr->member)},
-                                   {"", N<EllipsisExpr>(EllipsisExpr::PARTIAL)}}));
+                                   {"member", N<StringExpr>(expr->member)}}));
   }
 
-  // For debugging purposes: ctx->findMethod(typ->name, expr->member);
+  // For debugging purposes:
+  // ctx->findMethod(typ.get(), expr->member);
   E(Error::DOT_NO_ATTR, expr, typ->prettyString(), expr->member);
   return nullptr;
 }
@@ -372,7 +374,7 @@ FuncTypePtr TypecheckVisitor::getBestOverload(Expr *expr,
     bool addSelf = true;
     if (auto dot = expr->getDot()) {
       auto methods =
-          ctx->findMethod(dot->expr->type->getClass()->name, dot->member, false);
+          ctx->findMethod(dot->expr->type->getClass().get(), dot->member, false);
       if (!methods.empty() && methods.front()->ast->attributes.has(Attr::StaticMethod))
         addSelf = false;
     }
@@ -404,15 +406,15 @@ FuncTypePtr TypecheckVisitor::getBestOverload(Expr *expr,
     }
   }
 
-  if (methodArgs) {
-    FuncTypePtr bestMethod = nullptr;
+  bool goDispatch = methodArgs == nullptr;
+  if (!goDispatch) {
+    std::vector<FuncTypePtr> m;
     // Use the provided arguments to select the best method
     if (auto dot = expr->getDot()) {
       // Case: method overloads (DotExpr)
       auto methods =
-          ctx->findMethod(dot->expr->type->getClass()->name, dot->member, false);
-      auto m = findMatchingMethods(dot->expr->type->getClass(), methods, *methodArgs);
-      bestMethod = m.empty() ? nullptr : m[0];
+          ctx->findMethod(dot->expr->type->getClass().get(), dot->member, false);
+      m = findMatchingMethods(dot->expr->type->getClass(), methods, *methodArgs);
     } else if (auto id = expr->getId()) {
       // Case: function overloads (IdExpr)
       std::vector<types::FuncTypePtr> methods;
@@ -420,12 +422,23 @@ FuncTypePtr TypecheckVisitor::getBestOverload(Expr *expr,
         if (!endswith(m.name, ":dispatch"))
           methods.push_back(ctx->cache->functions[m.name].type);
       std::reverse(methods.begin(), methods.end());
-      auto m = findMatchingMethods(nullptr, methods, *methodArgs);
-      bestMethod = m.empty() ? nullptr : m[0];
+      m = findMatchingMethods(nullptr, methods, *methodArgs);
     }
-    if (bestMethod)
-      return bestMethod;
-  } else {
+
+    if (m.size() == 1) {
+      return m[0];
+    } else if (m.size() > 1) {
+      for (auto &a : *methodArgs) {
+        if (auto u = a.value->type->getUnbound()) {
+          goDispatch = true;
+        }
+      }
+      if (!goDispatch)
+        return m[0];
+    }
+  }
+
+  if (goDispatch) {
     // If overload is ambiguous, route through a dispatch function
     std::string name;
     if (auto dot = expr->getDot()) {

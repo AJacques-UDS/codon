@@ -1,4 +1,4 @@
-# Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+# Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 import internal.gc as gc
 
@@ -333,6 +333,14 @@ class List:
         self.len = 0
 
     def index(self, x: T) -> int:
+        i = 0
+        for a in self:
+            if a == x:
+                return i
+            i += 1
+        raise ValueError(f"{x} is not in list")
+
+    def find(self, x: T) -> int:
         i = 0
         for a in self:
             if a == x:

@@ -1,4 +1,4 @@
-// Copyright (C) 2022-2023 Exaloop Inc. <https://exaloop.io>
+// Copyright (C) 2022-2024 Exaloop Inc. <https://exaloop.io>
 
 #include "codon/parser/ast.h"
 #include "codon/parser/common.h"
@@ -27,6 +27,22 @@ using namespace types;
 ///          f = exc; ...; break                       # PyExc
 ///          raise```
 void TypecheckVisitor::visit(TryStmt *stmt) {
+  // TODO: static can-compile check
+  // if (stmt->catches.size() == 1 && stmt->catches[0].var.empty() &&
+  //     stmt->catches[0].exc->isId("std.internal.types.error.StaticCompileError")) {
+  //   /// TODO: this is right now _very_ dangerous; inferred types here will remain!
+  //   bool compiled = true;
+  //   try {
+  //     auto nctx = std::make_shared<TypeContext>(*ctx);
+  //     TypecheckVisitor(nctx).transform(clone(stmt->suite));
+  //   } catch (const exc::ParserException &exc) {
+  //     compiled = false;
+  //   }
+  //   resultStmt = compiled ? transform(stmt->suite) :
+  //   transform(stmt->catches[0].suite); LOG("testing!! {} {}", getSrcInfo(),
+  //   compiled); return;
+  // }
+
   ctx->blockLevel++;
   transform(stmt->suite);
   ctx->blockLevel--;
@@ -123,10 +139,11 @@ void TypecheckVisitor::visit(ThrowStmt *stmt) {
 
   transform(stmt->expr);
 
-  if (!(stmt->expr->getCall() &&
-        stmt->expr->getCall()->expr->isId("__internal__.set_header:0"))) {
+  if (!(stmt->expr->getCall() && stmt->expr->getCall()->expr->getId() &&
+        startswith(stmt->expr->getCall()->expr->getId()->value,
+                   "__internal__.set_header:0"))) {
     stmt->expr = transform(N<CallExpr>(
-        N<DotExpr>(N<IdExpr>("__internal__"), "set_header"), stmt->expr,
+        N<IdExpr>("__internal__.set_header:0"), stmt->expr,
         N<StringExpr>(ctx->getRealizationBase()->name),
         N<StringExpr>(stmt->getSrcInfo().file), N<IntExpr>(stmt->getSrcInfo().line),
         N<IntExpr>(stmt->getSrcInfo().col)));
